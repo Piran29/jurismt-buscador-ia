@@ -1,0 +1,20 @@
+# Ambiente Python
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# Banco de dados e documentos importados
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# Credenciais e arquivos privados
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Arquivos temporários
+*.log
