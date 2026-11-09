@@ -29,6 +29,25 @@ OFFICIAL_EDITION_35 = (
 
 PROCESS_NUMBER = r"\d{7}-\d{2}\.\d{4}\.8\.11\.\d{4}"
 TRT23_PROCESS_NUMBER = re.compile(r"(?<!\d)\d{7}-\d{2}\.\d{4}\.5\.23\.\d{4}(?!\d)")
+CNJ_PATTERN = re.compile(r"^(?P<seq>\d{7})-(?P<dv>\d{2})\.(?P<ano>\d{4})\.(?P<justica>\d)\.(?P<tribunal>\d{2})\.(?P<origem>\d{4})$")
+
+
+def valid_cnj(number: str, tribunal: str | None = None) -> bool:
+    """Confere estrutura e DV módulo 97, base 10 (Resolução CNJ 65/2008).
+
+    A validação matemática NÃO comprova que um processo existe ou que é público.
+    """
+    m = CNJ_PATTERN.fullmatch((number or "").strip())
+    if m is None:
+        return False
+    fields = m.groupdict()
+    if tribunal == "TJMT" and (fields["justica"], fields["tribunal"]) != ("8", "11"):
+        return False
+    if tribunal == "TRT-23" and (fields["justica"], fields["tribunal"]) != ("5", "23"):
+        return False
+    prefix = fields["seq"] + fields["ano"] + fields["justica"] + fields["tribunal"] + fields["origem"]
+    return (98 - int(prefix + "00") % 97) == int(fields["dv"])
+
 # O rodapé de cada ementa do Ementário do TJMT contém esta referência.
 FOOTNOTE = re.compile(
     rf"\(\s*TJMT\s*,\s*(?P<classe>.{{1,180}}?)\s+(?P<numero>{PROCESS_NUMBER})\s*,\s*"
@@ -209,6 +228,10 @@ def extract_ementario(pdf_bytes: bytes, edition: str = "35/2026") -> list[dict[s
                 last = match.end()
                 continue
             meta = {key: " ".join(value.split()) for key, value in match.groupdict().items()}
+            if not valid_cnj(meta["numero"], "TJMT"):
+                # Metadados inválidos não devem contaminar a base de pesquisa.
+                last = match.end()
+                continue
             # Paginação 1-based para links com #page=N.
             title_start = last
             if title != "Ementa do TJMT":
@@ -328,7 +351,13 @@ def index_missing_segments(conn: sqlite3.Connection, model: Any, progress=None, 
 
 
 def search(conn:sqlite3.Connection, query:str, filters:dict[str,str], model:Any=None,
-           exclude:str="", limit:int=20) -> list[dict[str,Any]]:
+           exclude:str="", limit:int=20, min_similarity:float=0.40) -> list[dict[str,Any]]:
+    """Busca híbrida. Limiar heurístico de cosseno, NÃO probabilidade jurídica.
+
+    O valor de corte precisa ser calibrado com consultas reais do acervo.
+    """
+    if not 0.0 <= min_similarity <= 1.0:
+        raise ValueError("O limiar de similaridade deve estar entre 0 e 1.")
     where, args = build_filter_sql(filters)
     rows = conn.execute(f"SELECT d.* FROM documents d WHERE {where}", args).fetchall()
     excluded = [x.casefold().strip() for x in exclude.split(",") if x.strip()]
@@ -336,42 +365,53 @@ def search(conn:sqlite3.Connection, query:str, filters:dict[str,str], model:Any=
     if not rows: return []
     ids = {r["id"] for r in rows}
     text_query = query.strip()
-    lexical: dict[int,float] = {}
+    lexical: dict[int, float] = {}
     if text_query:
         words = [t for t in re.findall(r"[^\W_]{3,}", text_query.lower(), flags=re.U)
                  if t not in STOPWORDS][:18]
         if words:
             expression = " OR ".join(f'"{w}"' for w in dict.fromkeys(words))
             try:
-                hits = conn.execute("SELECT rowid,bm25(documents_fts) AS score FROM documents_fts WHERE documents_fts MATCH ? ORDER BY score LIMIT 2000",(expression,)).fetchall()
+                # Executa filtros estruturados ANTES da limitação lexical.
+                hits = conn.execute(f"""SELECT d.id, bm25(documents_fts) AS score
+                    FROM documents_fts JOIN documents d ON d.id=documents_fts.rowid
+                    WHERE documents_fts MATCH ? AND {where}
+                    ORDER BY score LIMIT 5000""", [expression, *args]).fetchall()
                 for rank, h in enumerate(hits):
-                    if h["rowid"] in ids: lexical[h["rowid"]] = 1.0/(1.0 + rank/15.0)
+                    if h["id"] in ids:
+                        lexical[h["id"]] = 1.0 / (1.0 + rank / 15.0)
             except sqlite3.OperationalError:
                 pass
-    semantic:dict[int,tuple[float,str]]={}
+    semantic: dict[int, tuple[float, str]] = {}
     if model is not None and text_query:
-        query_vec = np.asarray(model.encode([text_query], normalize_embeddings=True, convert_to_numpy=True, show_progress_bar=False)[0], dtype=np.float32)
-        seg_rows = conn.execute("SELECT document_id,content,embedding FROM segments WHERE embedding IS NOT NULL AND embedding_model=?", (MODEL_NAME,)).fetchall()
-        # Somente segmentos da seleção atual de filtros.
-        indexed = [(s["document_id"], s["content"], np.frombuffer(s["embedding"], dtype=np.float32))
-                   for s in seg_rows if s["document_id"] in ids]
+        query_vec = np.asarray(model.encode([text_query], normalize_embeddings=True,
+                               convert_to_numpy=True, show_progress_bar=False)[0], dtype=np.float32)
+        # Os filtros SQL reduzem a leitura de embeddings irrelevantes.
+        seg_rows = conn.execute(f"""SELECT s.document_id,s.content,s.embedding FROM segments s
+            JOIN documents d ON d.id=s.document_id
+            WHERE s.embedding IS NOT NULL AND s.embedding_model=? AND {where}""",
+            [MODEL_NAME, *args]).fetchall()
+        indexed = [(r["document_id"], r["content"], np.frombuffer(r["embedding"], dtype=np.float32))
+                   for r in seg_rows if r["document_id"] in ids]
         if indexed:
-            matrix = np.vstack([x[2] for x in indexed])
-            if matrix.shape[1] == query_vec.shape[0]:
+            dimensions = {v.size for _, _, v in indexed}
+            if dimensions == {query_vec.size}:
+                matrix = np.vstack([x[2] for x in indexed])
                 scores = matrix @ query_vec
                 for i, score in enumerate(scores):
                     doc_id, excerpt, _ = indexed[i]
                     if doc_id not in semantic or float(score) > semantic[doc_id][0]:
-                        semantic[doc_id] = (float(score),excerpt)
+                        semantic[doc_id] = (float(score), excerpt)
     found = []
     # Sem consulta, mostrar registros por data. Com consulta e sem match, não mostrar dados aleatórios.
     for r in rows:
         doc_id = r["id"]
-        if text_query and doc_id not in semantic and doc_id not in lexical:
+        sem_score = semantic.get(doc_id, (0.0, ""))[0]
+        if text_query and doc_id not in lexical and sem_score < min_similarity:
             continue
         if model is not None and semantic:
             # Relevância relativa, não probabilidade nem avaliação jurídica.
-            score = 0.86 * max(0.0, semantic.get(doc_id,(0.0,""))[0]) + 0.14 * lexical.get(doc_id,0.0)
+            score = 0.86 * max(0.0, sem_score if sem_score >= min_similarity else 0.0) + 0.14 * lexical.get(doc_id,0.0)
         else:
             score = lexical.get(doc_id,0.0)
         item = dict(r)
@@ -425,10 +465,13 @@ def extract_trt23_document(pdf_bytes: bytes, metadata: dict[str, str] | None = N
         body = "\n\n".join(x for x in pages if x).strip()
         if len(body) < 120:
             raise ValueError("Não foi possível extrair texto. PDF digitalizado pode precisar de OCR.")
-        detected = list(dict.fromkeys(TRT23_PROCESS_NUMBER.findall(body)))
+        detected = [n for n in dict.fromkeys(TRT23_PROCESS_NUMBER.findall(body)) if valid_cnj(n, "TRT-23")]
         number = (metadata.get("numero") or "").strip()
-        if number and not TRT23_PROCESS_NUMBER.fullmatch(number):
-            raise ValueError("O processo deve ter formato CNJ da Justiça do Trabalho em MT (N.NNNNNNN-NN.AAAA.5.23.NNNN).")
+        if number and not valid_cnj(number, "TRT-23"):
+            raise ValueError("Número CNJ do TRT-23 inválido (formato ou dígito verificador módulo 97).")
+        if number and detected and number not in detected and not metadata.get("confirmar_numero_divergente", False):
+            raise ValueError("O processo informado não consta entre os números válidos encontrados no PDF. "
+                             "Confira o documento e marque a confirmação explícita para continuar.")
         if not number:
             if len(detected) != 1:
                 raise ValueError(
@@ -483,3 +526,32 @@ def import_trt23_pdf(conn: sqlite3.Connection, pdf_bytes: bytes,
                          (cur.lastrowid, i, chunk))
     conn.commit()
     return {"found": 1, "inserted": int(bool(cur.rowcount)), "duplicates": 1-int(bool(cur.rowcount))}
+
+
+EDITABLE_METADATA = {"title", "classe", "relator", "orgao", "julgamento", "publicacao", "source_url"}
+
+
+def update_document_metadata(conn: sqlite3.Connection, document_id: int, changes: dict[str, str]) -> None:
+    """Permite corrigir metadados sem substituir silenciosamente texto e hash originais.
+
+    O fingerprint de ingestão permanece como chave de deduplicação do conteúdo.
+    """
+    if not changes or set(changes) - EDITABLE_METADATA:
+        raise ValueError("Selecione apenas campos de metadados editáveis.")
+    row = conn.execute("SELECT tribunal FROM documents WHERE id=?", (document_id,)).fetchone()
+    if row is None:
+        raise ValueError("Documento não encontrado.")
+    normalized = {key: (value or "").strip() for key, value in changes.items()}
+    if "title" in normalized and not normalized["title"]:
+        raise ValueError("O título não pode ficar vazio.")
+    if "source_url" in normalized and normalized["source_url"] and not source_link_allowed(normalized["source_url"], row["tribunal"]):
+        raise ValueError("A URL deve ser HTTPS e de domínio oficial do tribunal do documento.")
+    for date_field in ("julgamento", "publicacao"):
+        if date_field in normalized:
+            normalized[date_field] = _trt23_date(normalized[date_field])
+    for name in ("title", "classe", "relator", "orgao"):
+        if name in normalized:
+            normalized[name] = normalized[name][:350 if name == "title" else 180]
+    columns = ", ".join(f"{key}=?" for key in normalized)
+    conn.execute(f"UPDATE documents SET {columns} WHERE id=?", [*normalized.values(), document_id])
+    conn.commit()
