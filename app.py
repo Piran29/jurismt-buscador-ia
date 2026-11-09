@@ -11,6 +11,7 @@ import streamlit as st
 from engine import (
     DB_PATH, MODEL_NAME, OFFICIAL_EDITION_35, UPLOADS, connect, filters_available,
     import_pdf, import_trt23_pdf, index_missing_segments, search, source_link_allowed, stats,
+    update_document_metadata,
 )
 
 st.set_page_config(page_title="JurisMT | Pesquisa jurisprudencial", page_icon="⚖️",
@@ -103,7 +104,11 @@ with st.sidebar:
             tribunal = "TRT-23"
             official_url = st.text_input("URL oficial do documento (opcional)", placeholder="https://pje.trt23.jus.br/...", key="url_trt")
             edition = ""
-            numero = st.text_input("Número do processo CNJ (recomendado)", placeholder="0000123-45.2025.5.23.0001", key="num_trt")
+            numero = st.text_input("Número do processo CNJ (recomendado)", placeholder="0000123-57.2025.5.23.0001", key="num_trt")
+            confirmar_divergente = st.checkbox(
+                "Confirmei manualmente um número diferente dos identificados no texto do PDF",
+                value=False, key="confirmar_numero_divergente",
+                help="Somente marque após verificar visualmente a decisão original. Não valida a existência do processo.")
             with st.expander("Metadados opcionais para filtros"):
                 titulo = st.text_input("Título da decisão", key="titulo_trt")
                 classe_meta = st.text_input("Classe judicial", key="classe_trt")
@@ -113,6 +118,7 @@ with st.sidebar:
                 pub_meta = st.text_input("Data de publicação (DD/MM/AAAA)", key="pub_trt")
             metadata = {
                 "numero": numero,
+                "confirmar_numero_divergente": confirmar_divergente,
                 "titulo": st.session_state.get("titulo_trt", ""),
                 "classe": st.session_state.get("classe_trt", ""),
                 "relator": st.session_state.get("relator_trt", ""),
@@ -175,6 +181,9 @@ with st.expander("Filtros avançados", expanded=False):
     c3,c4 = st.columns(2)
     with c3: numero = st.text_input("Número do processo (opcional)")
     with c4: exclude = st.text_input("Excluir expressões (separadas por vírgula)")
+    min_similarity = st.slider("Similaridade semântica mínima (experimental)", min_value=0.20,
+                               max_value=0.80, value=0.40, step=0.05,
+                               help="Limiar heurístico de cosseno; ajuste conforme os falsos positivos e os resultados perdidos. Termos textuais correspondentes ainda podem aparecer.")
 
 search_col, count_col = st.columns([1,3])
 with search_col:
@@ -207,7 +216,8 @@ elif do_search:
         }
         try:
             with st.spinner("Pesquisando o acervo local..."):
-                results = search(conn, query, filters, model=model, exclude=exclude, limit=30)
+                results = search(conn, query, filters, model=model, exclude=exclude,
+                                 limit=30, min_similarity=min_similarity)
             st.write(f"**{len(results)} resultado(s) exibido(s)** — {'busca semântica e textual' if model is not None else 'busca textual'}")
             if not results:
                 st.info("Sem correspondências no acervo atual. Ajuste os filtros ou importe mais edições.")
@@ -222,9 +232,9 @@ elif do_search:
                     source = hit["source_url"]
                     if source and source_link_allowed(source, hit["tribunal"]):
                         if hit["tribunal"] == "TJMT":
-                            c1.link_button("📄 PDF de origem", f"{source}#page={hit['pagina_inicio']}")
+                            c1.link_button("📄 URL oficial informada", f"{source}#page={hit['pagina_inicio']}")
                         else:
-                            c1.link_button("🔗 Link oficial informado", source)
+                            c1.link_button("🔗 URL oficial informada", source)
                     path = UPLOADS/(hit["file_sha256"]+".pdf")
                     if path.is_file():
                         c2.download_button("Baixar PDF importado", data=path.read_bytes(),
@@ -234,6 +244,27 @@ elif do_search:
                     with st.expander("Ver texto extraído"):
                         st.text(hit["ementa"])
                         st.caption("Confira o documento oficial antes de citar. A extração pode conter problemas de formatação.")
+                    with st.expander("Corrigir metadados (uso local)"):
+                        st.caption("A edição não modifica o PDF, a ementa original nem o número do processo. URLs declaradas não são comprovadas automaticamente.")
+                        with st.form(key=f"edit_{hit['id']}"):
+                            edit_title = st.text_input("Título", value=hit["title"])
+                            edit_relator = st.text_input("Relator(a)", value=hit["relator"] or "")
+                            edit_orgao = st.text_input("Órgão julgador", value=hit["orgao"] or "")
+                            edit_classe = st.text_input("Classe", value=hit["classe"] or "")
+                            edit_date = st.text_input("Data do julgamento (AAAA-MM-DD ou DD/MM/AAAA)", value=hit["julgamento"] or "")
+                            edit_pub = st.text_input("Data da publicação (AAAA-MM-DD ou DD/MM/AAAA)", value=hit["publicacao"] or "")
+                            edit_url = st.text_input("URL de origem declarada", value=hit["source_url"] or "")
+                            if st.form_submit_button("Salvar correção"):
+                                try:
+                                    update_document_metadata(conn, hit["id"], {
+                                        "title":edit_title, "relator":edit_relator, "orgao":edit_orgao,
+                                        "classe":edit_classe, "julgamento":edit_date,
+                                        "publicacao":edit_pub, "source_url":edit_url,
+                                    })
+                                    st.success("Metadados atualizados. O documento original foi preservado.")
+                                    st.rerun()
+                                except ValueError as exc:
+                                    st.error(str(exc))
         except Exception as exc:
             st.error(f"Falha na busca: {exc}")
 

@@ -14,7 +14,7 @@ def synthetic_trt_pdf():
     page = pdf.new_page(width=620, height=830)
     page.insert_text((42, 70),
         "TRT DA 23A REGIAO - DOCUMENTO TOTALMENTE SINTETICO\n"
-        "Processo 0000123-45.2025.5.23.0001\n"
+        "Processo 0000123-57.2025.5.23.0001\n"
         "TESTE DE HORAS EXTRAS E JORNADA.\n"
         "Este e um texto ficticio de treinamento tecnico. "
         "Nao representa decisao, entendimento ou precedente judicial.\n"
@@ -85,7 +85,7 @@ class MultiTribunalTests(unittest.TestCase):
                 source_url TEXT, file_sha256 TEXT, pagina_inicio INTEGER,
                 pagina_fim INTEGER, imported_at TEXT NOT NULL)""")
             c.execute("INSERT INTO documents(sha256,title,ementa,numero,imported_at) "
-                      "VALUES ('hash', 'anterior', 'texto', '1001234-56.2026.8.11.0001', '2026-01-01')")
+                      "VALUES ('hash', 'anterior', 'texto', '1001234-09.2026.8.11.0001', '2026-01-01')")
             c.commit()
             c.close()
             # simula o caso mínimo de uma instalação antiga com tabela preexistente.
@@ -98,14 +98,14 @@ class MultiTribunalTests(unittest.TestCase):
         pdf = fitz.open()
         page = pdf.new_page()
         page.insert_text((40, 50), 'Documento TRT23 com ementa sintetica de teste e descricao extensa.\n'
-                         'Referencias: 0000123-45.2025.5.23.0001 e 0004567-89.2026.5.23.0002.\n'
+                         'Referencias: 0000123-57.2025.5.23.0001 e 0004567-96.2026.5.23.0002.\n'
                          'Texto para verificar extracao segura sem assumir qual o processo principal.\n', fontsize=10)
         blob = pdf.tobytes()
         pdf.close()
         with self.assertRaises(ValueError):
             engine.extract_trt23_document(blob)
-        info = engine.extract_trt23_document(blob, {'numero':'0000123-45.2025.5.23.0001'})
-        self.assertEqual(info['numero'], '0000123-45.2025.5.23.0001')
+        info = engine.extract_trt23_document(blob, {'numero':'0000123-57.2025.5.23.0001'})
+        self.assertEqual(info['numero'], '0000123-57.2025.5.23.0001')
 
 if __name__ == '__main__':
     unittest.main()

@@ -18,13 +18,13 @@ def fake_pdf() -> bytes:
         "APELACAO CIVEL. DESCRICAO TOTALMENTE FICTICIA PARA TESTAR O PARSER.\n"
         "O sistema deve encontrar este texto longo o bastante para a validacao do teste.\n"
         "Este documento nao e jurisprudencia real e jamais sera usado no portal.\n"
-        "(TJMT, APELACAO CIVEL 1001234-56.2026.8.11.0001, Relator(a) PESSOA DE TESTE,\n"
+        "(TJMT, APELACAO CIVEL 1001234-09.2026.8.11.0001, Relator(a) PESSOA DE TESTE,\n"
         "Primeira Camara de Testes, Julgado em 12/09/2026, Publicado em 15/09/2026)\n"
         "DIREITO PROCESSUAL CIVIL - SEGUNDO JULGADO DE TESTE.\n"
         "APELACAO CIVEL. SEGUNDO TEXTO SINTETICO PARA FINS DE TESTE.\n"
         "Esta ementa demonstrativa nao e decisao judicial nem deve ser citada.\n"
         "Utilizada apenas para garantir funcionamento do parser e dos filtros.\n"
-        "(TJMT, AGRAVO DE INSTRUMENTO 1009876-54.2026.8.11.0002, Relator(a) OUTRA PESSOA TESTE,\n"
+        "(TJMT, AGRAVO DE INSTRUMENTO 1009876-65.2026.8.11.0002, Relator(a) OUTRA PESSOA TESTE,\n"
         "Segunda Camara de Testes, Julgado em 18/09/2026, Publicado em 20/09/2026)\n"
     )
     page.insert_text((45,40), story,fontsize=10, lineheight=1.3)
@@ -43,7 +43,7 @@ class PipelineTests(unittest.TestCase):
         content = fake_pdf()
         docs = engine.extract_ementario(content, "TESTE")
         self.assertEqual(len(docs),2,docs)
-        self.assertEqual(docs[0]['numero'],'1001234-56.2026.8.11.0001')
+        self.assertEqual(docs[0]['numero'],'1001234-09.2026.8.11.0001')
         self.assertEqual(docs[0]['area'],'Direito Privado')
         self.assertEqual(docs[1]['julgamento'],'2026-09-18')
         with tempfile.TemporaryDirectory() as temp:
@@ -59,7 +59,7 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(len(matches),2)
                 filtered=engine.search(conn,"sintetico",{"relator":"OUTRA PESSOA TESTE"})
                 self.assertEqual(len(filtered),1)
-                self.assertEqual(filtered[0]['numero'],'1009876-54.2026.8.11.0002')
+                self.assertEqual(filtered[0]['numero'],'1009876-65.2026.8.11.0002')
                 self.assertEqual(engine.stats(conn)['documents'],2)
             finally:
                 conn.close()

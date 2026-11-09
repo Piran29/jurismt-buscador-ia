@@ -109,3 +109,15 @@ O modelo de *embedding* é `sentence-transformers/paraphrase-multilingual-MiniLM
 ## Testes
 
 Rode `python -m pytest -q tests` (requer `pytest`) para testar o parser com PDF **sintético claramente identificado como teste** e a busca textual. Não existem decisões fictícias embarcadas na interface nem jurisprudências fabricadas como amostras de uso.
+
+
+## Confiabilidade — melhorias propostas na v1.2
+
+- **Validação CNJ:** números de processo passam por validação de estrutura e dígito verificador (módulo 97). Isso não comprova que o processo existe. Divergências entre o número informado e números válidos extraídos do PDF TRT-23 exigem confirmação explícita.
+- **Busca híbrida:** filtro experimental de similaridade semântica com valor inicial 0,40, configurável na tela. O valor não é probabilidade jurídica e exige calibração com pesquisas reais. Correspondências textuais podem continuar aparecendo abaixo desse limiar.
+- **Filtros e desempenho:** filtros estruturados passam a ser aplicados na consulta ao índice textual e aos vetores antes da ordenação; acervos maiores ainda precisarão de medições e possivelmente um índice vetorial dedicado.
+- **Metadados:** formulário local para corrigir título, classe, relator, órgão, datas e URL declarada, preservando texto, número e hash originais. Atualizações de conteúdo e remoções não foram implementadas.
+- **Proveniência:** URLs seguem restritas a domínios oficiais, mas sua correspondência ao acórdão não é verificada automaticamente. Confira sempre a decisão original.
+- **Qualidade:** novos testes sintéticos e workflow GitHub Actions para Pull Requests. Os testes não carregam o modelo de IA completo nem confirmam a extração real dos acervos.
+
+Execute `python -m unittest discover -s tests -v` depois de instalar `requirements-lite.txt` para rodar os testes locais.
