@@ -1,0 +1,24 @@
+name: Testes do JurisMT
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-lite.txt
+      - name: Instalar dependências para testes locais
+        run: python -m pip install -r requirements-lite.txt
+      - name: Verificar sintaxe
+        run: python -m compileall -q app.py engine.py tests
+      - name: Executar testes sintéticos
+        run: python -m unittest discover -s tests -v
